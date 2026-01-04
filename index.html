@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Boids: High-Fidelity Survival (Cartoon Map Edition)</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body oncontextmenu="return false;">
+
+    <canvas id="gameCanvas"></canvas>
+
+    <div id="ui-layer">
+        <!-- Start Screen -->
+        <div id="start-screen" class="screen-overlay">
+            <div class="screen-content">
+                <h1 class="game-title">Boids: High-Fidelity Survival</h1>
+                <p class="game-subtitle">Cartoon Map Edition</p>
+                <div class="game-description">
+                    <p>Guide your flock through a dangerous world filled with wolves!</p>
+                    <p>Reach the sanctuary to survive and protect your birds.</p>
+                    <p>Use the CALL button to recall scattered birds.</p>
+                </div>
+                
+                <div class="start-difficulty">
+                    <h3>Select Difficulty</h3>
+                    <div class="diff-group">
+                        <div class="diff-btn" onclick="setDifficulty('easy')">Easy<br>(5 Wolf / Afraid of Rain)</div>
+                        <div class="diff-btn selected" onclick="setDifficulty('medium')">Medium<br>(10 Wolves / Afraid of Rain)</div>
+                        <div class="diff-btn" onclick="setDifficulty('hard')">Hard<br>(15 Wolves / Frenzy)</div>
+                    </div>
+                </div>
+                
+                <button id="start-btn" class="primary-btn">Start Game</button>
+            </div>
+        </div>
+        
+        <!-- Restart Screen -->
+        <div id="restart-screen" class="screen-overlay" style="display: none;">
+            <div class="screen-content">
+                <h1 id="restart-title" class="game-title">Game Over</h1>
+                <div class="game-result">
+                    <div class="result-stat">
+                        <span class="stat-label">Flock Survived:</span>
+                        <span id="final-flock-count" class="stat-value">0</span>
+                    </div>
+                    <div class="result-stat">
+                        <span class="stat-label">Difficulty:</span>
+                        <span id="final-difficulty" class="stat-value">Medium</span>
+                    </div>
+                </div>
+                <button id="restart-btn" class="primary-btn">Restart Game</button>
+            </div>
+        </div>
+        
+        <div id="minimap-container" title="Map"><canvas id="minimap-canvas" width="220" height="220"></canvas></div>
+        
+        <div id="top-bar">
+            <div class="hud-box"><span>FLOCK</span><span id="flock-count-hud" style="color: #ffd700">0</span></div>
+            <div class="hud-box"><span>DIFFICULTY</span><span id="diff-text" style="color: #00ffff">MEDIUM</span></div>
+            <div class="hud-box"><span>THREAT</span><span id="status-text" style="color: #4ade80">SAFE</span></div>
+        </div>
+
+        <div id="gameplay-controls">
+            <div id="toggle-panel-btn">▶</div>
+            
+            <div class="control-title">🎮 Difficulty Selection (Restart Game)</div>
+            <div class="diff-group">
+                <div class="diff-btn" onclick="setDifficulty('easy')">Easy<br>(5 Wolf / Afraid of Rain)</div>
+                <div class="diff-btn selected" onclick="setDifficulty('medium')">Medium<br>(10 Wolves / Afraid of Rain)</div>
+                <div class="diff-btn" onclick="setDifficulty('hard')">Hard<br>(15 Wolves / Frenzy)</div>
+            </div>
+
+            <div class="control-title">🌦️ Weather Style</div>
+            <div class="weather-group">
+                <div class="weather-btn active" data-weather="sunny" title="Sunny">☀️</div>
+                <div class="weather-btn" data-weather="rain" title="Rainy">🌧️</div>
+                <div class="weather-btn" data-weather="wind" title="Windy">💨</div>
+                <div class="weather-btn" data-weather="storm" title="Stormy">⛈️</div>
+            </div>
+
+            <div class="control-title">⚙️ Algorithm Parameters</div>
+            <div class="slider-row"><label>Separation</label><input type="range" id="sepSlider" min="0" max="5" step="0.1" value="1.8"></div>
+            <div class="slider-row"><label>Alignment</label><input type="range" id="aliSlider" min="0" max="5" step="0.1" value="1.2"></div>
+            <div class="slider-row"><label>Cohesion</label><input type="range" id="cohSlider" min="0" max="5" step="0.1" value="2.0"></div>
+        </div>
+
+        <div id="tips">
+            <b>Hard Mode:</b> When you hide in the yellow circle, wolves will <span style="color:#ff3333">attack the flock</span> instead!<br>
+            The flock will <b>scatter and disappear</b> when attacked, you must press the <span style="color:#ffd700">CALL</span> button to recall them.
+        </div>
+        <div id="lock-btn"><span>📷</span><span>TRACE</span></div>
+        <div id="feed-btn"><span>📢</span><span>CALL</span></div>
+        <div id="game-over">YOU DIED<br><span style="font-size:16px; color:white">Click to restart</span></div>
+    </div>
+    
+    <script src="game.js"></script>
+</body>
+</html>
