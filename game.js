@@ -44,9 +44,9 @@ let lastMouse = { x: 0, y: 0 };
 const camera = { x: 0, y: 0, zoom: 0.5, locked: true };
 
 const DIFFICULTY_SETTINGS = {
-    easy:   { wolfCount: 5,  wolvesHateRain: true,  wolvesEatBirds: false, clusters: 5,  scatter: 300 },
-    medium: { wolfCount: 10, wolvesHateRain: true,  wolvesEatBirds: false, clusters: 8,  scatter: 350 },
-    hard:   { wolfCount: 15, wolvesHateRain: false, wolvesEatBirds: true,  clusters: 10, scatter: 400 }
+    easy:   { wolfCount: 5,  wolvesHateRain: true,  wolvesEatBirds: false, clusters: 5,  scatter: 80 },
+    medium: { wolfCount: 10, wolvesHateRain: true,  wolvesEatBirds: false, clusters: 8,  scatter: 120 },
+    hard:   { wolfCount: 15, wolvesHateRain: false, wolvesEatBirds: true,  clusters: 10, scatter: 150 }
 };
 
 const DIFFICULTY_DESCRIPTIONS = {
@@ -258,74 +258,145 @@ function drawCartoonTree(ctx, o) {
     ctx.restore();
 }
 
-// === Pathfinder Class (No Change) ===
+// === Spatial Hash for obstacles ===
+let obstacleGrid = {};
+const OBSTACLE_CELL = 200; // Larger cells for obstacle spatial hash
+
+function buildObstacleGrid() {
+    obstacleGrid = {};
+    for (let o of obstacles) {
+        // Add obstacle to all cells it could affect (considering its radius + margin)
+        const margin = o.r + CELL_SIZE / 2 + 20;
+        const minC = Math.floor((o.x - margin) / OBSTACLE_CELL);
+        const maxC = Math.floor((o.x + margin) / OBSTACLE_CELL);
+        const minR = Math.floor((o.y - margin) / OBSTACLE_CELL);
+        const maxR = Math.floor((o.y + margin) / OBSTACLE_CELL);
+
+        for (let c = minC; c <= maxC; c++) {
+            for (let r = minR; r <= maxR; r++) {
+                const key = `${c},${r}`;
+                if (!obstacleGrid[key]) obstacleGrid[key] = [];
+                obstacleGrid[key].push(o);
+            }
+        }
+    }
+}
+
+function getNearbyObstacles(x, y) {
+    const c = Math.floor(x / OBSTACLE_CELL);
+    const r = Math.floor(y / OBSTACLE_CELL);
+    return obstacleGrid[`${c},${r}`] || [];
+}
+
+// === Pathfinder Class (Optimized) ===
 class Pathfinder {
     constructor() { this.lastCalcTime = 0; }
     bakeNavMesh() {
+        buildObstacleGrid(); // Build spatial hash first
         navGrid = new Array(COLS).fill(0).map(() => new Array(ROWS).fill(true));
         for (let c = 0; c < COLS; c++) {
             for (let r = 0; r < ROWS; r++) {
-                let wx = c * CELL_SIZE + CELL_SIZE/2; let wy = r * CELL_SIZE + CELL_SIZE/2;
+                let wx = c * CELL_SIZE + CELL_SIZE / 2;
+                let wy = r * CELL_SIZE + CELL_SIZE / 2;
                 let safe = true;
-                for (let o of obstacles) { if (Math.hypot(wx - o.x, wy - o.y) < o.r + CELL_SIZE/2 + 20) { safe = false; break; } }
+                // Only check nearby obstacles using spatial hash
+                const nearby = getNearbyObstacles(wx, wy);
+                for (let o of nearby) {
+                    const dx = wx - o.x, dy = wy - o.y;
+                    const distSq = dx * dx + dy * dy;
+                    const minDist = o.r + CELL_SIZE / 2 + 20;
+                    if (distSq < minDist * minDist) { safe = false; break; }
+                }
                 navGrid[c][r] = safe;
             }
         }
     }
     toGrid(pos) { return { c: Math.floor(pos.x / CELL_SIZE), r: Math.floor(pos.y / CELL_SIZE) }; }
-    findPath(startPos, endPos) {
-        let startNode = this.toGrid(startPos); let endNode = this.toGrid(endPos);
-        if(startNode.c < 0 || startNode.c >= COLS || startNode.r < 0 || startNode.r >= ROWS) return [];
-        let searchRad = 1;
-        while(searchRad < 15 && (endNode.c < 0 || endNode.c >= COLS || endNode.r < 0 || endNode.r >= ROWS || !navGrid[endNode.c][endNode.r])) {
-            let found = false;
-            for(let i=-searchRad; i<=searchRad && !found; i++) {
-                for(let j=-searchRad; j<=searchRad && !found; j++) {
-                    let nc = endNode.c + i, nr = endNode.r + j;
-                    if(nc>=0 && nc<COLS && nr>=0 && nr<ROWS && navGrid[nc][nr]) { endNode = {c:nc, r:nr}; found = true; }
-                }
-            }
-            searchRad++;
+
+    // Binary insert to keep openSet sorted (much faster than sorting every iteration)
+    insertSorted(arr, node) {
+        let low = 0, high = arr.length;
+        while (low < high) {
+            const mid = (low + high) >>> 1;
+            if (arr[mid].f < node.f) low = mid + 1;
+            else high = mid;
         }
-        let openSet = []; let closedSet = new Set(); let cameFrom = {};
-        let gScore = {}; let fScore = {};
-        let startKey = `${startNode.c},${startNode.r}`;
-        gScore[startKey] = 0; fScore[startKey] = Math.abs(startNode.c - endNode.c) + Math.abs(startNode.r - endNode.r);
-        openSet.push({ c: startNode.c, r: startNode.r, f: fScore[startKey] });
-        let loops = 0;
-        while(openSet.length > 0) {
-            loops++; if(loops > 8000) return null; 
-            openSet.sort((a,b) => a.f - b.f);
-            let current = openSet.shift();
-            let currentKey = `${current.c},${current.r}`;
-            if(current.c === endNode.c && current.r === endNode.r) return this.reconstructPath(cameFrom, current, endPos);
-            closedSet.add(currentKey);
-            let neighbors = [{dc:0, dr:-1}, {dc:0, dr:1}, {dc:-1, dr:0}, {dc:1, dr:0}, {dc:-1, dr:-1}, {dc:1, dr:-1}, {dc:-1, dr:1}, {dc:1, dr:1}];
-            for(let n of neighbors) {
-                let neighbor = { c: current.c + n.dc, r: current.r + n.dr };
-                let nKey = `${neighbor.c},${neighbor.r}`;
-                if(neighbor.c < 0 || neighbor.c >= COLS || neighbor.r < 0 || neighbor.r >= ROWS) continue;
-                if(!navGrid[neighbor.c][neighbor.r]) continue; 
-                
-                // Check if this grid cell is within any predator's hunting range
-                let inPredatorRange = false;
-                for(let p of predators) {
-                    let gridPosX = neighbor.c * CELL_SIZE + CELL_SIZE/2;
-                    let gridPosY = neighbor.r * CELL_SIZE + CELL_SIZE/2;
-                    let dist = Math.hypot(gridPosX - p.pos.x, gridPosY - p.pos.y);
-                    if(dist < p.huntingRange) {
-                        inPredatorRange = true;
-                        break;
+        arr.splice(low, 0, node);
+    }
+
+    findPath(startPos, endPos) {
+        let startNode = this.toGrid(startPos);
+        let endNode = this.toGrid(endPos);
+        if (startNode.c < 0 || startNode.c >= COLS || startNode.r < 0 || startNode.r >= ROWS) return [];
+
+        // Find valid end node if needed
+        if (endNode.c < 0 || endNode.c >= COLS || endNode.r < 0 || endNode.r >= ROWS || !navGrid[endNode.c]?.[endNode.r]) {
+            let found = false;
+            for (let searchRad = 1; searchRad < 15 && !found; searchRad++) {
+                for (let i = -searchRad; i <= searchRad && !found; i++) {
+                    for (let j = -searchRad; j <= searchRad && !found; j++) {
+                        let nc = endNode.c + i, nr = endNode.r + j;
+                        if (nc >= 0 && nc < COLS && nr >= 0 && nr < ROWS && navGrid[nc][nr]) {
+                            endNode = { c: nc, r: nr };
+                            found = true;
+                        }
                     }
                 }
-                if(inPredatorRange) continue;
-                
-                if(closedSet.has(nKey)) continue;
-                let tentativeG = gScore[currentKey] + ((n.dc !== 0 && n.dr !== 0) ? 1.4 : 1.0);
-                if(tentativeG < (gScore[nKey] || Infinity)) {
-                    cameFrom[nKey] = current; gScore[nKey] = tentativeG;
-                    fScore[nKey] = tentativeG + Math.abs(neighbor.c - endNode.c) + Math.abs(neighbor.r - endNode.r);
-                    if(!openSet.some(node => node.c === neighbor.c && node.r === neighbor.r)) openSet.push({ c: neighbor.c, r: neighbor.r, f: fScore[nKey] });
+            }
+        }
+
+        let openSet = [];
+        let openSetMap = new Map(); // Fast lookup for existing nodes
+        let closedSet = new Set();
+        let cameFrom = {};
+        let gScore = {};
+
+        let startKey = `${startNode.c},${startNode.r}`;
+        gScore[startKey] = 0;
+        let startF = Math.abs(startNode.c - endNode.c) + Math.abs(startNode.r - endNode.r);
+        openSet.push({ c: startNode.c, r: startNode.r, f: startF });
+        openSetMap.set(startKey, true);
+
+        const neighbors = [
+            { dc: 0, dr: -1, cost: 1 }, { dc: 0, dr: 1, cost: 1 },
+            { dc: -1, dr: 0, cost: 1 }, { dc: 1, dr: 0, cost: 1 },
+            { dc: -1, dr: -1, cost: 1.4 }, { dc: 1, dr: -1, cost: 1.4 },
+            { dc: -1, dr: 1, cost: 1.4 }, { dc: 1, dr: 1, cost: 1.4 }
+        ];
+
+        let loops = 0;
+        while (openSet.length > 0) {
+            loops++;
+            if (loops > 8000) return null;
+
+            let current = openSet.shift(); // Already sorted, just take first
+            let currentKey = `${current.c},${current.r}`;
+            openSetMap.delete(currentKey);
+
+            if (current.c === endNode.c && current.r === endNode.r) {
+                return this.reconstructPath(cameFrom, current, endPos);
+            }
+
+            closedSet.add(currentKey);
+
+            for (let n of neighbors) {
+                let nc = current.c + n.dc, nr = current.r + n.dr;
+                if (nc < 0 || nc >= COLS || nr < 0 || nr >= ROWS) continue;
+                if (!navGrid[nc][nr]) continue;
+
+                let nKey = `${nc},${nr}`;
+                if (closedSet.has(nKey)) continue;
+
+                let tentativeG = gScore[currentKey] + n.cost;
+                if (tentativeG < (gScore[nKey] || Infinity)) {
+                    cameFrom[nKey] = current;
+                    gScore[nKey] = tentativeG;
+                    let f = tentativeG + Math.abs(nc - endNode.c) + Math.abs(nr - endNode.r);
+
+                    if (!openSetMap.has(nKey)) {
+                        this.insertSorted(openSet, { c: nc, r: nr, f: f });
+                        openSetMap.set(nKey, true);
+                    }
                 }
             }
         }
@@ -1046,134 +1117,115 @@ function updateTips() {
 function resize() { canvas.width = window.innerWidth; canvas.height = window.innerHeight; }
 window.addEventListener('resize', resize); resize();
 
-// Generate control points for Bezier curve
-let safePathControlPoints = [];
+// Safe path as array of line segments
+let safePathPoints = [];
 
-function generateSafePathControlPoints() {
+function generateSafePathPoints() {
     const startX = 300, startY = 300;
     const endX = WORLD_SIZE - 400, endY = WORLD_SIZE - 400;
-    
-    // Generate different number of control points based on difficulty
-    let numControlPoints;
+
+    // Generate different number of waypoints based on difficulty
+    let numPoints;
     let maxRandomOffset;
-    
+
     switch(currentDifficulty) {
-        case 'easy': 
-            numControlPoints = 10;
-            maxRandomOffset = 5000;
+        case 'easy':
+            numPoints = 5;
+            maxRandomOffset = 400;
             break;
-        case 'medium': 
-            numControlPoints = 50;
-            maxRandomOffset = 10000;
+        case 'medium':
+            numPoints = 8;
+            maxRandomOffset = 600;
             break;
-        case 'hard': 
-            numControlPoints = 50;
-            maxRandomOffset = 15000;
+        case 'hard':
+            numPoints = 10;
+            maxRandomOffset = 800;
             break;
-        default: 
-            numControlPoints = 1;
-            maxRandomOffset = 100;
+        default:
+            numPoints = 3;
+            maxRandomOffset = 200;
     }
-    
-    safePathControlPoints = [];
-    
-    // Generate control points
-    for(let i = 0; i < numControlPoints; i++) {
-        // Distribute control points evenly between start and end points
-        const t = (i + 1) / (numControlPoints + 1);
+
+    safePathPoints = [{x: startX, y: startY}];
+
+    // Generate intermediate waypoints
+    for(let i = 0; i < numPoints; i++) {
+        const t = (i + 1) / (numPoints + 1);
         const baseX = startX + t * (endX - startX);
         const baseY = startY + t * (endY - startY);
-        
-        // Add random offset
+
+        // Add random offset, clamped to world bounds
         const offsetX = (Math.random() - 0.5) * 2 * maxRandomOffset;
         const offsetY = (Math.random() - 0.5) * 2 * maxRandomOffset;
-        
-        safePathControlPoints.push({x: baseX + offsetX, y: baseY + offsetY});
+
+        const px = Math.max(100, Math.min(WORLD_SIZE - 100, baseX + offsetX));
+        const py = Math.max(100, Math.min(WORLD_SIZE - 100, baseY + offsetY));
+
+        safePathPoints.push({x: px, y: py});
     }
+
+    safePathPoints.push({x: endX, y: endY});
 }
 
-// Calculate points on Bezier curve
-function bezierPoint(t, start, controlPoints, end) {
-    const n = controlPoints.length + 1;
-    let x = 0, y = 0;
-    
-    // Calculate Bezier curve points using binomial coefficients
-    for(let i = 0; i <= n; i++) {
-        const c = binomialCoefficient(n, i);
-        const term = c * Math.pow(1 - t, n - i) * Math.pow(t, i);
-        
-        let point;
-        if(i === 0) point = start;
-        else if(i === n) point = end;
-        else point = controlPoints[i - 1];
-        
-        x += term * point.x;
-        y += term * point.y;
+// Calculate distance from point to line segment
+function distToSegment(px, py, x1, y1, x2, y2) {
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const lenSq = dx * dx + dy * dy;
+
+    if (lenSq === 0) {
+        // Segment is a point
+        return Math.sqrt((px - x1) * (px - x1) + (py - y1) * (py - y1));
     }
-    
-    return {x, y};
+
+    // Project point onto line, clamped to segment
+    let t = ((px - x1) * dx + (py - y1) * dy) / lenSq;
+    t = Math.max(0, Math.min(1, t));
+
+    const nearestX = x1 + t * dx;
+    const nearestY = y1 + t * dy;
+
+    return Math.sqrt((px - nearestX) * (px - nearestX) + (py - nearestY) * (py - nearestY));
 }
 
-// Calculate binomial coefficient
-function binomialCoefficient(n, k) {
-    if(k < 0 || k > n) return 0;
-    if(k === 0 || k === n) return 1;
-    
-    k = Math.min(k, n - k);
-    let result = 1;
-    for(let i = 1; i <= k; i++) {
-        result = result * (n - k + i) / i;
-    }
-    
-    return result;
-}
-
-// Check if point is inside safe path
+// Check if point is inside safe path (near any segment)
 function isPointInSafePath(x, y, width) {
-    const start = {x: 300, y: 300};
-    const end = {x: WORLD_SIZE - 400, y: WORLD_SIZE - 400};
-    
     // Set different safe path widths based on difficulty
     if (width === undefined) {
         switch(currentDifficulty) {
-            case 'easy': width = 100;
+            case 'easy': width = 150;
                 break;
-            case 'medium': width = 75;
+            case 'medium': width = 100;
                 break;
-            case 'hard': width = 50;
+            case 'hard': width = 70;
                 break;
-            default: width = 300;
+            default: width = 200;
         }
     }
-    
-    // If control points array is empty, generate control points
-    if(safePathControlPoints.length === 0) {
-        generateSafePathControlPoints();
+
+    // If path points array is empty, generate points
+    if(safePathPoints.length === 0) {
+        generateSafePathPoints();
     }
-    
-    // Calculate shortest distance from point to Bezier curve
-    let minDist = Infinity;
-    const samples = 100;
-    
-    for(let i = 0; i <= samples; i++) {
-        const t = i / samples;
-        const curvePoint = bezierPoint(t, start, safePathControlPoints, end);
-        const dx = x - curvePoint.x;
-        const dy = y - curvePoint.y;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        
-        if(dist < minDist) {
-            minDist = dist;
+
+    // Check distance to each line segment
+    for(let i = 0; i < safePathPoints.length - 1; i++) {
+        const p1 = safePathPoints[i];
+        const p2 = safePathPoints[i + 1];
+        const dist = distToSegment(x, y, p1.x, p1.y, p2.x, p2.y);
+
+        if(dist < width) {
+            return true;
         }
     }
-    
-    return minDist < width;
+
+    return false;
 }
 
 function generateMaze() {
     obstacles = []; habitats = []; predators = []; caves = [];
-    // Regenerate control points for safe path
-    generateSafePathControlPoints();
+    // Regenerate points for safe path
+    generateSafePathPoints();
     let settings = DIFFICULTY_SETTINGS[currentDifficulty];
     const treeTypes = ['oak', 'pine', 'palm', 'round'];
     
@@ -1212,47 +1264,22 @@ function generateMaze() {
         }
     }
     
-    // Generate scattered obstacles
+    // Generate scattered obstacles (simplified - just 3 attempts per obstacle)
+    const startEndRadius = 600;
     for(let i=0; i<settings.scatter; i++) {
-        let x, y;
-        let safe = false;
-        
-        // Set forbidden area radius near start/end and attempt count based on difficulty
-        const startEndRadius = currentDifficulty === 'easy' ? 600 : 
-                              currentDifficulty === 'medium' ? 700 : 800;
-        const maxAttempts = currentDifficulty === 'easy' ? 10 : 
-                           currentDifficulty === 'medium' ? 20 : 30;
-        
-        // Try to generate an obstacle not in safe area
-        for(let attempt = 0; attempt < maxAttempts && !safe; attempt++) {
-            x = Math.random() * WORLD_SIZE;
-            y = Math.random() * WORLD_SIZE;
-            
-            if (Math.hypot(x-300, y-300) < startEndRadius || 
-                Math.hypot(x-goal.x, y-goal.y) < startEndRadius ||
-                isPointInSafePath(x, y, 200)) {
-                continue;
-            }
-            
-            // Check if too close to other obstacles
-            let tooClose = false;
-            for(let o of obstacles) {
-                if(Math.hypot(x-o.x, y-o.y) < o.r + 10) {
-                    tooClose = true;
-                    break;
-                }
-            }
-            
-            if(!tooClose) {
-                safe = true;
-            }
-        }
-        
-        // If safe position found, add obstacle
-        if(safe) {
+        for(let attempt = 0; attempt < 3; attempt++) {
+            let x = Math.random() * WORLD_SIZE;
+            let y = Math.random() * WORLD_SIZE;
+
+            // Quick rejection checks
+            if (Math.hypot(x-300, y-300) < startEndRadius) continue;
+            if (Math.hypot(x-goal.x, y-goal.y) < startEndRadius) continue;
+            if (isPointInSafePath(x, y, 200)) continue;
+
             let r = 30 + Math.random() * 90;
             let type = treeTypes[Math.floor(Math.random() * treeTypes.length)];
             obstacles.push({x: x, y: y, r: r, seed: Math.random(), type: type});
+            break; // Found valid position, move to next obstacle
         }
     }
     for(let i=0; i<8; i++) { caves.push({x: Math.random()*WORLD_SIZE, y: Math.random()*WORLD_SIZE, r: 50}); }
@@ -1285,34 +1312,28 @@ function initWorld() {
     globalPath = [];
     pathIndex = 0;
     waypoints = []; // Clear all player-added waypoints when updating map
-    let maxAttempts = 100;
+    let maxAttempts = 10; // Reduced from 100 for faster startup
     let validMap = false;
-    
-    // Try to generate a valid map, up to 5 attempts
+
+    // Try to generate a valid map
     for(let attempt = 0; attempt < maxAttempts && !validMap; attempt++) {
         generateMaze();
         pathfinder.bakeNavMesh();
-        
+
         // Check if there's a feasible path between start and end points
         let testPath = pathfinder.findPath({x: 300, y: 300}, goal);
         if(testPath && testPath.length > 1) {
             validMap = true;
         }
     }
-    
-    // If still unable to generate valid map after 5 attempts, clear all obstacles to ensure feasible path
+
+    // If still unable to generate valid map, clear obstacles blocking path
     if(!validMap) {
-        // Clear all obstacles, only keep essential game elements
         obstacles = [];
         pathfinder.bakeNavMesh();
-        // Check again if path is feasible
-        let testPath = pathfinder.findPath({x: 300, y: 300}, goal);
-        if(testPath) {
-            console.log("Warning: Generated simplified map to ensure feasible path");
-        }
     }
-    
-    flock = []; for(let i=0; i<1200; i++) flock.push(new Boid());
+
+    flock = []; for(let i=0; i<800; i++) flock.push(new Boid()); // Reduced from 1200
     WeatherSystem.init(); updateFlockCountUI();
     
     // Reset weather buttons to default state
